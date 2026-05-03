@@ -7,7 +7,7 @@ from datetime import datetime
 
 app = FastAPI()
 
-# CORS
+# ---------------- CORS ----------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,11 +16,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# MediaPipe
-mp_face = mp.solutions.face_mesh.FaceMesh(refine_landmarks=True)
-mp_pose = mp.solutions.pose.Pose()
-
-# SESSION MEMORY (simple in-memory tracking)
+# ---------------- SESSION MEMORY ----------------
 session_state = {
     "gaze_off_frames": 0,
     "total_frames": 0,
@@ -28,18 +24,28 @@ session_state = {
     "max_continuous_off": 0,
 }
 
+# ---------------- ROOT ----------------
 @app.get("/")
 def home():
     return {"message": "AI Server Running 🚀"}
 
-
+# ---------------- ANALYZE ----------------
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
     contents = await file.read()
+
+    # Convert to image
     npimg = np.frombuffer(contents, np.uint8)
     frame = cv2.imdecode(npimg, cv2.IMREAD_COLOR)
 
+    if frame is None:
+        return {"error": "Invalid image"}
+
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    # 🔥 Load MediaPipe INSIDE request (fixes crash)
+    mp_face = mp.solutions.face_mesh.FaceMesh(refine_landmarks=True)
+    mp_pose = mp.solutions.pose.Pose()
 
     face_result = mp_face.process(frame_rgb)
     pose_result = mp_pose.process(frame_rgb)
@@ -58,21 +64,20 @@ async def analyze(file: UploadFile = File(...)):
         eye_center_y = (left_eye.y + right_eye.y) / 2
         eye_center_x = (left_eye.x + right_eye.x) / 2
 
-        # 🔥 LOOKING DOWN (phone usage)
+        # Looking down
         if eye_center_y > 0.55:
             gaze_off = True
 
-        # 🔥 LOOKING SIDE
+        # Looking sideways
         if abs(left_eye.x - right_eye.x) > 0.25:
             gaze_off = True
 
-        # 🔥 HEAD TURN (nose deviation)
+        # Head turn
         if abs(nose.x - eye_center_x) > 0.1:
             gaze_off = True
 
     else:
-        # no face = cheating
-        gaze_off = True
+        gaze_off = True  # no face detected
 
     # ---------------- POSTURE ----------------
     if pose_result.pose_landmarks:
@@ -81,6 +86,10 @@ async def analyze(file: UploadFile = File(...)):
 
         if shoulder_diff > 0.08:
             posture_bad = True
+
+    # ---------------- CLOSE MEDIAPIPE ----------------
+    mp_face.close()
+    mp_pose.close()
 
     # ---------------- SESSION TRACK ----------------
     session_state["total_frames"] += 1
@@ -108,7 +117,7 @@ async def analyze(file: UploadFile = File(...)):
         "max_continuous_off": session_state["max_continuous_off"]
     }
 
-
+# ---------------- FINAL REPORT ----------------
 @app.get("/final-report")
 def final_report():
     total = session_state["total_frames"]
@@ -121,7 +130,6 @@ def final_report():
         session_state["max_continuous_off"] > 15
     )
 
-    # SECTION SCORES
     scores = {
         "attention": round(attention, 2),
         "integrity": 40 if cheating else 90,
