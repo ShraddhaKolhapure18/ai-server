@@ -7,7 +7,7 @@ from datetime import datetime
 
 app = FastAPI()
 
-# ---------------- CORS ----------------
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,7 +16,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------------- SESSION MEMORY ----------------
+# Session tracking
 session_state = {
     "gaze_off_frames": 0,
     "total_frames": 0,
@@ -24,17 +24,14 @@ session_state = {
     "max_continuous_off": 0,
 }
 
-# ---------------- ROOT ----------------
 @app.get("/")
 def home():
     return {"message": "AI Server Running 🚀"}
 
-# ---------------- ANALYZE ----------------
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
     contents = await file.read()
 
-    # Convert to image
     npimg = np.frombuffer(contents, np.uint8)
     frame = cv2.imdecode(npimg, cv2.IMREAD_COLOR)
 
@@ -43,17 +40,17 @@ async def analyze(file: UploadFile = File(...)):
 
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-    # 🔥 Load MediaPipe INSIDE request (fixes crash)
-    mp_face = mp.solutions.face_mesh.FaceMesh(refine_landmarks=True)
-    mp_pose = mp.solutions.pose.Pose()
+    # Lazy load MediaPipe
+    face_mesh = mp.solutions.face_mesh.FaceMesh(refine_landmarks=True)
+    pose = mp.solutions.pose.Pose()
 
-    face_result = mp_face.process(frame_rgb)
-    pose_result = mp_pose.process(frame_rgb)
+    face_result = face_mesh.process(frame_rgb)
+    pose_result = pose.process(frame_rgb)
 
     gaze_off = False
     posture_bad = False
 
-    # ---------------- FACE / GAZE ----------------
+    # FACE CHECK
     if face_result.multi_face_landmarks:
         lm = face_result.multi_face_landmarks[0].landmark
 
@@ -64,34 +61,31 @@ async def analyze(file: UploadFile = File(...)):
         eye_center_y = (left_eye.y + right_eye.y) / 2
         eye_center_x = (left_eye.x + right_eye.x) / 2
 
-        # Looking down
         if eye_center_y > 0.55:
             gaze_off = True
 
-        # Looking sideways
         if abs(left_eye.x - right_eye.x) > 0.25:
             gaze_off = True
 
-        # Head turn
         if abs(nose.x - eye_center_x) > 0.1:
             gaze_off = True
 
     else:
-        gaze_off = True  # no face detected
+        gaze_off = True
 
-    # ---------------- POSTURE ----------------
+    # POSTURE CHECK
     if pose_result.pose_landmarks:
         lm = pose_result.pose_landmarks.landmark
+
         shoulder_diff = abs(lm[11].y - lm[12].y)
 
         if shoulder_diff > 0.08:
             posture_bad = True
 
-    # ---------------- CLOSE MEDIAPIPE ----------------
-    mp_face.close()
-    mp_pose.close()
+    face_mesh.close()
+    pose.close()
 
-    # ---------------- SESSION TRACK ----------------
+    # SESSION TRACKING
     session_state["total_frames"] += 1
 
     if gaze_off:
@@ -106,7 +100,8 @@ async def analyze(file: UploadFile = File(...)):
     )
 
     attention_score = 100 - (
-        session_state["gaze_off_frames"] / max(1, session_state["total_frames"])
+        session_state["gaze_off_frames"] /
+        max(1, session_state["total_frames"])
     ) * 100
 
     return {
@@ -117,7 +112,6 @@ async def analyze(file: UploadFile = File(...)):
         "max_continuous_off": session_state["max_continuous_off"]
     }
 
-# ---------------- FINAL REPORT ----------------
 @app.get("/final-report")
 def final_report():
     total = session_state["total_frames"]
@@ -138,26 +132,28 @@ def final_report():
     }
 
     final_score = round(
-        (scores["attention"] * 0.4 +
-         scores["confidence"] * 0.3 +
-         scores["posture"] * 0.2 +
-         scores["integrity"] * 0.1) / 10,
+        (
+            scores["attention"] * 0.4 +
+            scores["confidence"] * 0.3 +
+            scores["posture"] * 0.2 +
+            scores["integrity"] * 0.1
+        ) / 10,
         1
     )
 
     tips = []
 
     if attention < 70:
-        tips.append("Maintain consistent eye contact with camera")
+        tips.append("Maintain consistent eye contact")
 
     if session_state["max_continuous_off"] > 10:
-        tips.append("Avoid looking away for long durations")
+        tips.append("Avoid looking away frequently")
 
     if cheating:
-        tips.append("Avoid using external devices during discussion")
+        tips.append("Avoid external distractions")
 
     if not tips:
-        tips.append("Good performance. Maintain consistency.")
+        tips.append("Good performance")
 
     return {
         "date": datetime.now().strftime("%Y-%m-%d"),
